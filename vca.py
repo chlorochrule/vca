@@ -8,13 +8,14 @@
 
 import numpy as np
 from numpy.linalg import svd, norm
+from sympy import Symbol, plot_implicit
 
 class VCA(object):
     """Vanishing component analysis
     """
-    def __init__(self, e=0.05, n_component=None, max_dimension=3):
+    def __init__(self, eps=0.05, n_component=None, max_dimension=3):
         super(VCA, self).__init__()
-        self.e = e
+        self.eps = eps
         self.n_component = n_component
         self.max_dimension = max_dimension
 
@@ -34,47 +35,62 @@ class VCA(object):
         return self
 
     def _fit(self, S):
-        m = len(X)
-        F = np.ndarray([[1/np.sqrt(m)]])
-        C = np.matrix(np.identity(m+1))[1:]
-        power_matrix = np.matrix(np.identity(m+1))
-        F1, V1 = _find_range_null(F, C, S, power_matrix)
+        m, n = S.shape
+        F = [1./np.sqrt(m)]
+        V = []
+        FS = np.array([[1./np.sqrt(m)]*m])
+        C = [Symbol('x{}'.format(i+1)) for i in xrange(n)]
+        CS = S.T
+        F1, FS1, V1 = self._find_range_null(F, FS, C, CS)
         F.extend(F1)
+        FS = np.append(FS, FS1, axis=0)
         V.extend(V1)
         Ft = F1
-        for i in xrange(1, m):
-            power_matrix = self._update_power_matrix(Ft, F1, power_matrix)
-            C = self._update_ct(Ft, F1, power_matrix)
+        FSt = FS1
+        for i in xrange(1, self.max_dimension+1):
+            C = [g * h for g in Ft for h in F1]
+            CS = np.repeat(FSt, len(FS1), axis=0) * np.tile(FS1, (len(FSt), 1))
             if len(C) == 0:
                 break
-            Ft, Vt = _find_range_null(F, C, S, power_matrix)
+            Ft, FSt, Vt = self._find_range_null(F, FS, C, CS)
             F.extend(Ft)
+            FS = np.append(FS, FSt, axis=0)
             V.extend(Vt)
-            F = self._pad(F, power_matrix.shape[1])
-            V = self._pad(V, power_matrix.shape[1])
+        self.components_ = V
 
-    def _find_range_null(self, F, C, S, power_matrix):
-        C = self._gs(C, F, S, power_matrix)
-        A = self._evalate(C, S, power_matrix)
+    def _find_range_null(self, F, FS, C, CS):
+        k = len(C)
+        inn_FCS = np.dot(CS, FS.T)
+        for i, f in enumerate(C):
+            for j, g in enumerate(F):
+                C[i] -= inn_FCS[i][j] * g
+        A = (CS - np.dot(inn_FCS, FS)).T
         _, D, U = svd(A)
-        G = np.dot(U, C)
-        Dii = np.sum(D, axis=1)
+        GS = np.dot(U, CS)
+        F1 = []
+        V1 = []
+        dmax = len(D)
+        for i in xrange(k):
+            g = 0
+            for j, fc in enumerate(C):
+                g += U[i][j] * fc
+            if i >= dmax:
+                D = np.append(D, 0)
+            if D[i] > self.eps:
+                F1.append(g / norm(GS[i]))
+            else:
+                V1.append(g)
         normalize = lambda x: x / norm(x)
-        return G[Dii > self.e].apply_along_axis(normalize), G[Dii <= self.e]
+        FS1 = np.apply_along_axis(normalize, 1, GS[D > self.eps]) if max(D) > self.eps else GS[D > self.eps]
+        return F1, FS1, V1
 
-    def _evalate(self, C, S, power_matrix):
-        monomialize = lambda x: (x ** power_matrix.T).prod(axis=1)
-        return np.dot(self._pad(C, power_matrix.shape[1]), (S.apply_along_axis(monomialize).T)).T
+def main():
+    vca = VCA(eps=0.005, max_dimension=4)
+    vca.fit(np.array([[-1, 0], [1, 0], [0, 1], [0, -1]]))
+    print vca.components_
+    for fn in vca.components_:
+        plot_implicit(fn)
 
-    def _pad(self, matrix, length):
-        pad_func = lambda x: np.pad(x, (0, length - len(x)), 'constant')
-        return matrix.apply_along_axis(pad_func)
 
-    def _gs(C, F, S, power_matrix):
-        A = self._evalate(C, S, power_matrix).T
-        B = self._evalate(F, S, power_matrix)
-        C -= np.dot(np.dot(A, B) , F)
-        return C
-
-    def _update_power_matrix(Ft, F1, power_matrix):
-        
+if __name__ == '__main__':
+    main()
